@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+dirs = "6.0.0"
 eframe = "0.31.1"
 pem = "3.0.5"
 rand = "0.8.0"
+ronf = { version = "0.3.0", features = ["read_file", "yaml"], default-features = false }
 rsa = "0.9.8"
