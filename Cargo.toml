@@ -1,6 +1,9 @@
 [package]
 name = "rsa_ui"
-version = "0.1.0"
+description = "A simple UI for the RSA library"
+homepage = "https://github.com/LeviLovie/rsa_ui"
+license = "MIT"
+version = "1.0.0"
 edition = "2024"
 
 [dependencies]
