@@ -65,8 +65,8 @@ impl App {
                 r#"---
 keys:
   - name: "default"
-    private_key: ""
-    public_key: """#,
+    type: private
+    key: """#,
             );
             let saved_keys = match ronf::File::from_path_format(
                 config_file.into_os_string().into_string().unwrap(),
@@ -117,16 +117,16 @@ keys:
                         return;
                     }
                 };
-                let private_key = match key.get("private_key") {
-                    Some(private_key) => private_key,
+                let type_ = match key.get("type") {
+                    Some(type_) => type_,
                     None => {
                         self.error = Some("Failed to load keys. Invalid config file.".to_string());
                         self.interactive = false;
                         return;
                     }
                 };
-                let public_key = match key.get("public_key") {
-                    Some(public_key) => public_key,
+                let key_str = match key.get("key") {
+                    Some(private_key) => private_key,
                     None => {
                         self.error = Some("Failed to load keys. Invalid config file.".to_string());
                         self.interactive = false;
@@ -138,15 +138,17 @@ keys:
                         .trim_start_matches("\"")
                         .trim_end_matches("\"")
                         .to_string(),
-                    private_key
+                    type_
                         .to_string()
                         .trim_start_matches("\"")
                         .trim_end_matches("\"")
                         .to_string(),
-                    public_key
+                    key_str
                         .to_string()
                         .trim_start_matches("\"")
                         .trim_end_matches("\"")
+                        .trim_end_matches("\n")
+                        .trim_end_matches("\r")
                         .to_string(),
                 ));
             }
@@ -162,18 +164,24 @@ keys:
             std::fs::create_dir_all(config_file.parent().unwrap()).unwrap();
         }
         let mut keys = vec![];
-        for (name, private_key, public_key) in &self.keys {
+        for (name, type_, key_str) in &self.keys {
             let mut key: std::collections::HashMap<String, ronf::Value> =
                 std::collections::HashMap::new();
             key.insert("name".to_string(), ronf::Value::String(name.to_string()));
-            key.insert(
-                "private_key".to_string(),
-                ronf::Value::String(private_key.to_string()),
-            );
-            key.insert(
-                "public_key".to_string(),
-                ronf::Value::String(public_key.to_string()),
-            );
+            key.insert("type".to_string(), ronf::Value::String(type_.to_string()));
+            match type_.as_str() {
+                "private" => {
+                    key.insert("key".to_string(), ronf::Value::String(key_str.to_string()));
+                }
+                "public" => {
+                    key.insert("key".to_string(), ronf::Value::String(key_str.to_string()));
+                }
+                _ => {
+                    self.error = Some("Invalid key type".to_string());
+                    self.interactive = false;
+                    return;
+                }
+            }
             keys.push(ronf::Value::Table(key));
         }
         let mut config = ronf::Config::builder()
@@ -183,8 +191,8 @@ keys:
                 r#"---
 keys:
   - name: "default"
-    private_key: ""
-    public_key: """#,
+    type: private
+    key: """#,
             ))
             .build()
             .unwrap();
@@ -234,13 +242,18 @@ impl eframe::App for App {
                             .expect("failed to convert public key to PEM")
                             .to_string();
                         self.keys.push((
-                            "Enter name here".to_string(),
+                            "New key".to_string(),
+                            "private".to_string(),
                             self.private_key_string.clone(),
+                        ));
+                        self.keys.push((
+                            "New key".to_string(),
+                            "public".to_string(),
                             self.public_key_string.clone(),
                         ));
                     }
                     if ui
-                        .add_enabled(self.interactive, egui::Button::new("Load"))
+                        .add_enabled(self.interactive, egui::Button::new("Parse keys"))
                         .clicked()
                     {
                         let priv_pem = match pem::parse(self.public_key_string.clone()) {
@@ -305,16 +318,14 @@ impl eframe::App for App {
                     self.error = Some("Keys saved".to_string());
                     self.interactive = false;
                 }
-                ui.label("Keys");
                 egui::Grid::new("keys").show(ui, |ui| {
-                    ui.label("Name                             ");
-                    ui.end_row();
                     let mut keys_to_delete = vec![];
-                    let mut new_priv_key = self.public_key_string.clone();
-                    let mut new_pub_key = self.private_key_string.clone();
+                    let mut key_str = String::new();
+                    let mut type_str = String::new();
                     let mut load = false;
-                    for (i, (name, priv_key, pub_key)) in self.keys.iter_mut().enumerate() {
-                        ui.add_enabled(self.interactive, egui::TextEdit::singleline(name));
+                    for (i, (name, type_, key)) in self.keys.iter_mut().enumerate() {
+                        ui.add_sized([200.0, 20.0], egui::TextEdit::singleline(name));
+                        ui.label(type_.clone());
                         if ui
                             .add_enabled(self.interactive, egui::Button::new("Delete"))
                             .clicked()
@@ -325,9 +336,18 @@ impl eframe::App for App {
                             .add_enabled(self.interactive, egui::Button::new("Load"))
                             .clicked()
                         {
-                            new_priv_key = priv_key.clone();
-                            new_pub_key = pub_key.clone();
-                            load = true;
+                            if type_ == "private" {
+                                key_str = key.clone();
+                                type_str = type_.clone();
+                                load = true;
+                            } else if type_ == "public" {
+                                key_str = key.clone();
+                                type_str = type_.clone();
+                                load = true;
+                            } else {
+                                self.error = Some("Invalid key type".to_string());
+                                self.interactive = false;
+                            }
                         }
                         ui.end_row();
                     }
@@ -335,47 +355,52 @@ impl eframe::App for App {
                         self.keys.remove(*i);
                     }
                     if load {
-                        self.private_key_string = new_priv_key;
-                        self.public_key_string = new_pub_key;
-                        let priv_pem = match pem::parse(self.public_key_string.clone()) {
-                            Ok(pem) => Some(pem),
-                            Err(_) => {
-                                self.error = Some("Invalid PEM format of public key".to_string());
-                                self.interactive = false;
-                                None
-                            }
-                        };
-                        let pub_pem = match pem::parse(self.private_key_string.clone()) {
-                            Ok(pem) => Some(pem),
-                            Err(_) => {
-                                self.error = Some("Invalid PEM format of private key".to_string());
-                                self.interactive = false;
-                                None
-                            }
-                        };
-                        if self.interactive {
-                            let priv_pem = priv_pem.unwrap();
-                            match rsa::RsaPublicKey::from_public_key_der(&priv_pem.contents()) {
-                                Ok(key) => {
-                                    self.public_key = Some(key);
-                                }
+                        if type_str == "private" {
+                            self.private_key_string = key_str.clone();
+                            let priv_pem = match pem::parse(key_str) {
+                                Ok(pem) => Some(pem),
                                 Err(_) => {
-                                    self.error = Some("Invalid public key".to_string());
+                                    self.error =
+                                        Some("Invalid PEM format of public key".to_string());
                                     self.interactive = false;
+                                    None
                                 }
                             };
-                        }
-                        if self.interactive {
-                            let pub_pem = pub_pem.unwrap();
-                            match rsa::RsaPrivateKey::from_pkcs8_der(&pub_pem.contents()) {
-                                Ok(key) => {
-                                    self.private_key = Some(key);
-                                }
+                            if self.interactive {
+                                let priv_pem = priv_pem.unwrap();
+                                match rsa::RsaPrivateKey::from_pkcs8_der(&priv_pem.contents()) {
+                                    Ok(key) => {
+                                        self.private_key = Some(key);
+                                    }
+                                    Err(_) => {
+                                        self.error = Some("Invalid private key".to_string());
+                                        self.interactive = false;
+                                    }
+                                };
+                            }
+                        } else if type_str == "public" {
+                            self.public_key_string = key_str.clone();
+                            let pub_pem = match pem::parse(key_str) {
+                                Ok(pem) => Some(pem),
                                 Err(_) => {
-                                    self.error = Some("Invalid private key".to_string());
+                                    self.error =
+                                        Some("Invalid PEM format of private key".to_string());
                                     self.interactive = false;
+                                    None
                                 }
                             };
+                            if self.interactive {
+                                let pub_pem = pub_pem.unwrap();
+                                match rsa::RsaPublicKey::from_public_key_der(&pub_pem.contents()) {
+                                    Ok(key) => {
+                                        self.public_key = Some(key);
+                                    }
+                                    Err(_) => {
+                                        self.error = Some("Invalid public key".to_string());
+                                        self.interactive = false;
+                                    }
+                                };
+                            }
                         }
                     }
                 });
