@@ -3,7 +3,7 @@
 use eframe::egui;
 use rsa::{
     pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey},
-    RsaPrivateKey, RsaPublicKey,
+    Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey,
 };
 
 fn main() -> eframe::Result {
@@ -21,12 +21,15 @@ fn main() -> eframe::Result {
 struct App {
     interactive: bool,
     error: Option<String>,
+    rng: rand::rngs::ThreadRng,
     keys: Vec<(String, String, String)>,
     public_key_string: String,
     public_key: Option<rsa::RsaPublicKey>,
     private_key_string: String,
     private_key: Option<rsa::RsaPrivateKey>,
     private_key_show: bool,
+    message: String,
+    encrypted_message: String,
 }
 
 impl Default for App {
@@ -34,12 +37,15 @@ impl Default for App {
         let mut app = Self {
             error: None,
             interactive: true,
+            rng: rand::thread_rng(),
             keys: Vec::new(),
             public_key_string: String::new(),
             public_key: None,
             private_key_string: String::new(),
             private_key: None,
             private_key_show: false,
+            message: String::new(),
+            encrypted_message: String::new(),
         };
         app.load_keys();
         app
@@ -207,10 +213,9 @@ impl eframe::App for App {
                         .add_enabled(self.interactive, egui::Button::new("Generate"))
                         .clicked()
                     {
-                        let mut rng = rand::thread_rng(); // rand@0.8
                         let bits = 2048;
-                        let priv_key =
-                            RsaPrivateKey::new(&mut rng, bits).expect("failed to generate a key");
+                        let priv_key = RsaPrivateKey::new(&mut self.rng, bits)
+                            .expect("failed to generate a key");
                         let pub_key = RsaPublicKey::from(&priv_key);
                         self.private_key = Some(priv_key);
                         self.public_key = Some(pub_key);
@@ -392,6 +397,91 @@ impl eframe::App for App {
                         .interactive(self.interactive),
                 );
             });
+        });
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Message");
+                if ui
+                    .add_enabled(self.interactive, egui::Button::new("Encrypt"))
+                    .clicked()
+                {
+                    if self.public_key.is_none() {
+                        self.error = Some("No public key".to_string());
+                        self.interactive = false;
+                    } else {
+                        let public_key = self.public_key.clone().unwrap();
+                        let message_data = self.message.as_bytes();
+                        let encrypted = match public_key.encrypt(
+                            &mut self.rng,
+                            Pkcs1v15Encrypt,
+                            &message_data[..],
+                        ) {
+                            Ok(encrypted) => encrypted,
+                            Err(_) => {
+                                self.error = Some("Failed to encrypt".to_string());
+                                self.interactive = false;
+                                return;
+                            }
+                        };
+                        self.encrypted_message =
+                            base64::Engine::encode(&base64::prelude::BASE64_STANDARD, encrypted);
+                    }
+                }
+            });
+            ui.add_sized(
+                [ui.available_size().x, 200.0],
+                egui::TextEdit::multiline(&mut self.message)
+                    .code_editor()
+                    .interactive(self.interactive),
+            );
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label("Encrypted Message");
+                if ui
+                    .add_enabled(self.interactive, egui::Button::new("Decrypt"))
+                    .clicked()
+                {
+                    if self.private_key.is_none() {
+                        self.error = Some("No private key".to_string());
+                        self.interactive = false;
+                    } else {
+                        let private_key = self.private_key.clone().unwrap();
+                        let encrypted_message = self
+                            .encrypted_message
+                            .clone()
+                            .trim_end_matches("\n")
+                            .trim_end_matches("\r")
+                            .to_string();
+                        let encrypted_data = match base64::Engine::decode(
+                            &base64::prelude::BASE64_STANDARD,
+                            encrypted_message,
+                        ) {
+                            Ok(data) => data,
+                            Err(_) => {
+                                self.error = Some("Invalid base64 format".to_string());
+                                self.interactive = false;
+                                return;
+                            }
+                        };
+                        let decrypted =
+                            match private_key.decrypt(Pkcs1v15Encrypt, &encrypted_data[..]) {
+                                Ok(decrypted) => decrypted,
+                                Err(_) => {
+                                    self.error = Some("Failed to decrypt".to_string());
+                                    self.interactive = false;
+                                    return;
+                                }
+                            };
+                        self.message = String::from_utf8(decrypted).unwrap();
+                    }
+                }
+            });
+            ui.add_sized(
+                [ui.available_size().x, 200.0],
+                egui::TextEdit::multiline(&mut self.encrypted_message)
+                    .code_editor()
+                    .interactive(self.interactive),
+            );
         });
         if self.error.is_some() {
             let window_size = ctx.screen_rect().size();
